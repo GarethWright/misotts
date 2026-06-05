@@ -48,6 +48,7 @@ class Generator:
     def __init__(
         self,
         model: Model,
+        watermark: bool = True,
     ):
         self._model = model
         self._model.setup_caches(1)
@@ -61,7 +62,8 @@ class Generator:
         mimi.set_num_codebooks(self._model.config.audio_num_codebooks)
         self._audio_tokenizer = mimi
 
-        self._watermarker = load_watermarker(device=device)
+        self._watermark = watermark
+        self._watermarker = load_watermarker(device=device) if watermark else None
 
         self.sample_rate = mimi.sample_rate
         self.device = device
@@ -167,10 +169,11 @@ class Generator:
 
         audio = self._audio_tokenizer.decode(torch.stack(samples).permute(1, 2, 0)).squeeze(0).squeeze(0)
 
-        # This applies an imperceptible watermark to identify audio as AI-generated.
-        # If using Miso TTS in another application, use your own private key and keep it secret.
-        audio, wm_sample_rate = watermark(self._watermarker, audio, self.sample_rate, MISO_TTS_WATERMARK)
-        audio = torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
+        if self._watermark:
+            # This applies an imperceptible watermark to identify audio as AI-generated.
+            # If using Miso TTS in another application, use your own private key and keep it secret.
+            audio, wm_sample_rate = watermark(self._watermarker, audio, self.sample_rate, MISO_TTS_WATERMARK)
+            audio = torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
 
         return audio
 
@@ -232,7 +235,8 @@ def load_miso_8b(
     device: str = "cuda",
     model_path_or_repo_id: Optional[str] = None,
     dtype: torch.dtype = torch.bfloat16,
+    watermark: bool = True,
 ) -> Generator:
     source = model_path_or_repo_id or os.environ.get("MISO_TTS_8B_MODEL", DEFAULT_MISO_TTS_REPO_ID)
     model = _load_model(source, MISO_TTS_8B_CONFIG, device=device, dtype=dtype)
-    return Generator(model)
+    return Generator(model, watermark=watermark)
