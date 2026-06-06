@@ -18,6 +18,7 @@
   <a href="#model-introduction">Model Introduction</a> |
   <a href="#model-summary">Model Summary</a> |
   <a href="#usage">Usage</a> |
+  <a href="#rust">Rust</a> |
   <a href="#safety">Safety</a>
 </p>
 
@@ -64,6 +65,31 @@ source .venv/bin/activate
 pip install -e .
 python run_misotts.py
 ```
+
+### Rust quickstart
+
+A native Rust inference binary lives in `misotts-rs/`. It downloads the same
+weights automatically and produces identical output. No Python, PyTorch, or
+virtual environment required.
+
+Prerequisites: a working [Rust toolchain](https://rustup.rs) (stable, 1.75+).
+
+```bash
+cd misotts-rs
+cargo build --release          # CPU
+# or, for CUDA:
+cargo build --release --features cuda
+```
+
+Run the demo:
+
+```bash
+./target/release/misotts "Hello from Miso." --output hello.wav
+```
+
+The first run fetches the model checkpoint, the Mimi codec, and the Llama
+tokenizer from Hugging Face Hub into `~/.cache/huggingface/hub/` (the same
+cache the Python version uses).
 
 ---
 
@@ -196,6 +222,144 @@ Hugging Face cache resumes from files that already completed.
 
 ---
 
+## Rust
+
+The `misotts-rs/` directory contains a self-contained Rust crate that
+reimplements the full inference pipeline natively — no Python interpreter,
+no PyTorch, no virtual environment.
+
+### Build
+
+```bash
+cd misotts-rs
+
+# CPU (works on any machine)
+cargo build --release
+
+# NVIDIA GPU (requires CUDA toolkit)
+cargo build --release --features cuda
+
+# Apple GPU (requires macOS 13+)
+cargo build --release --features metal
+```
+
+### CLI
+
+```
+USAGE:
+    misotts [OPTIONS] <TEXT>
+
+ARGS:
+    <TEXT>    Text to synthesise
+
+OPTIONS:
+    --speaker <N>             Speaker ID [default: 0]
+    --output <FILE>           Output WAV path [default: output.wav]
+    --context-audio <FILE>    Prior audio for voice conditioning
+    --context-text <TEXT>     Transcript of the context audio
+    --context-speaker <N>     Speaker ID for the context audio [default: 0]
+    --max-audio-ms <MS>       Maximum output length in ms [default: 90000]
+    --temperature <F>         Sampling temperature [default: 0.9]
+    --topk <N>                Top-k vocabulary size [default: 50]
+    --model-repo <REPO>       HuggingFace repo ID for model weights
+    --model-path <FILE>       Local path to model .safetensors file
+    --cuda                    Use CUDA device 0
+```
+
+**Basic synthesis:**
+
+```bash
+./target/release/misotts "Hello from Miso." --output hello.wav
+```
+
+**Multi-speaker conversation** (mirrors the Python demo):
+
+```bash
+./target/release/misotts "I'm just honestly not that into him, you know?" \
+    --speaker 0 --output turn1.wav
+
+./target/release/misotts "Yeah, I get it." \
+    --speaker 1 \
+    --context-audio turn1.wav \
+    --context-text "I'm just honestly not that into him, you know?" \
+    --context-speaker 0 \
+    --output turn2.wav
+```
+
+**Voice conditioning** (provide a reference clip to match a speaker's voice):
+
+```bash
+./target/release/misotts "This is the generated line." \
+    --context-audio reference.wav \
+    --context-text "This is the reference transcript." \
+    --output conditioned.wav
+```
+
+**Use a local model checkpoint** (skips the HuggingFace download):
+
+```bash
+./target/release/misotts "Hello." \
+    --model-path /path/to/model.safetensors \
+    --output hello.wav
+```
+
+### Library API
+
+Add `misotts-rs` as a Cargo dependency:
+
+```toml
+[dependencies]
+misotts = { path = "../misotts-rs" }
+```
+
+```rust
+use misotts::{
+    config::miso_tts_8b_config,
+    generator::{Generator, Segment},
+    mimi::MimiCodec,
+    model::Model,
+    tokenizer::TextTokenizer,
+};
+use candle_core::{DType, Device};
+use candle_nn::VarBuilder;
+
+let device = Device::Cpu;
+
+let vb = unsafe {
+    VarBuilder::from_mmaped_safetensors(&["model.safetensors"], DType::F32, &device)?
+};
+let model     = Model::load(miso_tts_8b_config(), vb, &device)?;
+let tokenizer = TextTokenizer::from_file("tokenizer.json".as_ref())?;
+let mimi      = MimiCodec::load("mimi.safetensors".as_ref(), &device)?;
+
+let mut generator = Generator::new(model, tokenizer, mimi, device);
+
+let audio: Vec<f32> = generator.generate(
+    "Hello from Miso.",
+    0,       // speaker
+    &[],     // no context
+    10_000.0,  // max_audio_ms
+    0.9,     // temperature
+    50,      // topk
+)?;
+// audio is a mono f32 waveform at 24 000 Hz
+```
+
+### Notes
+
+- **Watermarking** is not applied by the Rust binary. The Python version
+  embeds a SilentCipher watermark by default; no equivalent Rust library
+  exists for SilentCipher. If watermarking is required, post-process the
+  output WAV with the Python `watermarking.py` script.
+- **Precision:** the Rust binary currently runs in `float32`. The Python
+  version defaults to `bfloat16` on CUDA. Outputs will be numerically
+  equivalent but not bit-for-bit identical.
+- **Weight cache:** both the Rust and Python runtimes use the same
+  `~/.cache/huggingface/hub/` directory, so weights only need to be
+  downloaded once regardless of which runtime you use first.
+
+---
+
 ## System Requirements
 
 Miso TTS 8B is a **large** model (~8.2B parameters across the backbone, audio
@@ -214,12 +378,13 @@ the Mimi codec, the SilentCipher watermarker, the KV cache, and activations.
 and ~40 GB for `float32`.
 
 **Disk:** the first run downloads ~30–40 GB total — the model checkpoint plus the
-Mimi codec, the SilentCipher watermarker, and the Llama 3.2 tokenizer — into the
-Hugging Face cache. Make sure you have the free space before starting.
+Mimi codec, the SilentCipher watermarker (Python only), and the Llama 3.2
+tokenizer — into the Hugging Face cache. The Rust and Python runtimes share
+the same cache directory. Make sure you have the free space before starting.
 
-GPU inference defaults to `torch.bfloat16`. A 24 GB card comfortably fits the
-bf16 weights; smaller consumer GPUs (4–16 GB) are not sufficient for the full
-model.
+GPU inference defaults to `torch.bfloat16` (Python) or `float32` (Rust). A
+24 GB card comfortably fits bf16 weights; `float32` requires 40 GB+. Smaller
+consumer GPUs (4–16 GB) are not sufficient for the full model.
 
 ---
 
