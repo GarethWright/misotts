@@ -264,6 +264,7 @@ OPTIONS:
     --model-repo <REPO>       HuggingFace repo ID for model weights
     --model-path <FILE>       Local path to model .safetensors file
     --cuda                    Use CUDA device 0
+    --dtype <DTYPE>           bf16 (default on GPU), f16, or f32
 ```
 
 **Basic synthesis:**
@@ -351,9 +352,11 @@ let audio: Vec<f32> = generator.generate(
   embeds a SilentCipher watermark by default; no equivalent Rust library
   exists for SilentCipher. If watermarking is required, post-process the
   output WAV with the Python `watermarking.py` script.
-- **Precision:** the Rust binary currently runs in `float32`. The Python
-  version defaults to `bfloat16` on CUDA. Outputs will be numerically
-  equivalent but not bit-for-bit identical.
+- **Precision:** the Rust binary defaults to `bfloat16` on CUDA/Metal and
+  `float32` on CPU — the same policy as the Python version. Override with
+  `--dtype f32 | bf16 | f16`. `bf16` fits comfortably on a 24 GB card
+  (RTX 3090/4090); `f32` requires ~40 GB. Outputs in `bf16` and `f32` are
+  numerically close but not bit-for-bit identical.
 - **Weight cache:** both the Rust and Python runtimes use the same
   `~/.cache/huggingface/hub/` directory, so weights only need to be
   downloaded once regardless of which runtime you use first.
@@ -382,9 +385,9 @@ Mimi codec, the SilentCipher watermarker (Python only), and the Llama 3.2
 tokenizer — into the Hugging Face cache. The Rust and Python runtimes share
 the same cache directory. Make sure you have the free space before starting.
 
-GPU inference defaults to `torch.bfloat16` (Python) or `float32` (Rust). A
-24 GB card comfortably fits bf16 weights; `float32` requires 40 GB+. Smaller
-consumer GPUs (4–16 GB) are not sufficient for the full model.
+Both the Python and Rust runtimes default to `bfloat16` on GPU. A 24 GB
+card (RTX 3090 / 4090) comfortably fits the bf16 weights. `float32` requires
+~40 GB+. Smaller consumer GPUs (4–16 GB) are not sufficient for the full model.
 
 ---
 

@@ -16,6 +16,8 @@ pub fn sample_topk(
     temperature: f32,
     rng: &mut impl Rng,
 ) -> Result<Tensor> {
+    // Cast to F32 for numerical stability (BF16 softmax loses precision).
+    let logits = logits.to_dtype(DType::F32)?;
     let logits = (logits / temperature as f64)?;
 
     // Get the k-th largest value as threshold.
@@ -74,10 +76,13 @@ pub struct Model {
     pub backbone_causal_mask: Tensor,
     pub decoder_causal_mask: Tensor,
     pub config: ModelConfig,
+    /// Working precision for activations (matches the loaded weight dtype).
+    pub dtype: DType,
 }
 
 impl Model {
     pub fn load(cfg: ModelConfig, vb: VarBuilder, device: &Device) -> Result<Self> {
+        let dtype = vb.dtype();
         let backbone = Llama::load(&cfg.backbone, vb.pp("backbone"), device)?;
         let decoder = Llama::load(&cfg.decoder, vb.pp("decoder"), device)?;
 
@@ -115,6 +120,7 @@ impl Model {
             backbone_causal_mask,
             decoder_causal_mask,
             config: cfg,
+            dtype,
         })
     }
 
@@ -178,9 +184,9 @@ impl Model {
         let backbone_mask = index_causal_mask(&self.backbone_causal_mask, &pos_t)?;
 
         // Embed and sum across the codebook+text dimension.
-        let embeds = self.embed_tokens(tokens)?.to_dtype(DType::F32)?;
+        let embeds = self.embed_tokens(tokens)?.to_dtype(self.dtype)?;
         let mask_f = tokens_mask
-            .to_dtype(DType::F32)?
+            .to_dtype(self.dtype)?
             .unsqueeze(3)?
             .broadcast_as(embeds.shape())?;
         let h = (embeds * mask_f)?.sum(2)?; // (b, seq, embed_dim)
@@ -188,7 +194,7 @@ impl Model {
         let h = self
             .backbone
             .forward(&h, positions, Some(&backbone_mask))?
-            .to_dtype(DType::F32)?;
+            .to_dtype(self.dtype)?;
 
         let seq_len = h.dim(1)?;
         let last_h = h.narrow(1, seq_len - 1, 1)?; // (b, 1, d_bb)
@@ -220,7 +226,7 @@ impl Model {
             let dec_h = self
                 .decoder
                 .forward(&proj, &dec_positions[..dec_len], Some(&dec_mask))?
-                .to_dtype(DType::F32)?;
+                .to_dtype(self.dtype)?;
 
             // Logits via audio_head[i-1]: shape (d_dec, vocab_size)
             let head_i = self.audio_head.narrow(0, i - 1, 1)?.squeeze(0)?;

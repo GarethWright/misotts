@@ -68,6 +68,11 @@ struct Args {
     /// Use CUDA device 0.
     #[arg(long)]
     cuda: bool,
+
+    /// Weight / activation precision: bf16 (default on GPU), f16, or f32.
+    /// bf16 halves VRAM and fits a 3090/4090; f32 needs 40 GB+.
+    #[arg(long, value_name = "DTYPE")]
+    dtype: Option<String>,
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -88,6 +93,19 @@ async fn main() -> Result<()> {
     } else {
         Device::Cpu
     };
+
+    // Default: BF16 on GPU (fits 24 GB cards), F32 on CPU.
+    let dtype = match args.dtype.as_deref() {
+        Some("bf16") => DType::BF16,
+        Some("f16")  => DType::F16,
+        Some("f32")  => DType::F32,
+        None => match &device {
+            Device::Cpu => DType::F32,
+            _ => DType::BF16,
+        },
+        Some(other) => anyhow::bail!("unknown dtype {other:?} — use bf16, f16, or f32"),
+    };
+    info!("Using dtype: {dtype:?}");
 
     let api = Api::new()?;
 
@@ -120,7 +138,7 @@ async fn main() -> Result<()> {
 
     info!("Loading TTS model weights (may take a while for 8 B parameters)");
     let vb = unsafe {
-        VarBuilder::from_mmaped_safetensors(&[&model_path], DType::F32, &device)?
+        VarBuilder::from_mmaped_safetensors(&[&model_path], dtype, &device)?
     };
     let model = Model::load(miso_tts_8b_config(), vb, &device)?;
 
