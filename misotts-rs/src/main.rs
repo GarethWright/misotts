@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use candle_nn::VarBuilder;
 use clap::Parser;
-use hf_hub::api::tokio::Api;
+use hf_hub::api::tokio::ApiBuilder;
 use std::path::PathBuf;
 use tracing::info;
 
@@ -73,6 +73,12 @@ struct Args {
     /// bf16 halves VRAM and fits a 3090/4090; f32 needs 40 GB+.
     #[arg(long, value_name = "DTYPE")]
     dtype: Option<String>,
+
+    /// HuggingFace access token (for gated models such as the Llama tokenizer).
+    /// Falls back to the HF_TOKEN / HUGGING_FACE_HUB_TOKEN env vars, then
+    /// ~/.cache/huggingface/token written by `huggingface-cli login`.
+    #[arg(long, value_name = "TOKEN")]
+    hf_token: Option<String>,
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -107,7 +113,18 @@ async fn main() -> Result<()> {
     };
     info!("Using dtype: {dtype:?}");
 
-    let api = Api::new()?;
+    // Token priority: --hf-token flag > HF_TOKEN env > HUGGING_FACE_HUB_TOKEN env > ~/.cache/huggingface/token
+    let hf_token = args
+        .hf_token
+        .clone()
+        .or_else(|| std::env::var("HF_TOKEN").ok())
+        .or_else(|| std::env::var("HUGGING_FACE_HUB_TOKEN").ok());
+
+    let api = if hf_token.is_some() {
+        ApiBuilder::new().with_token(hf_token).build()?
+    } else {
+        ApiBuilder::new().build()?
+    };
 
     // ── Locate / download weights ─────────────────────────────────────────────
     let model_path = if let Some(p) = &args.model_path {
